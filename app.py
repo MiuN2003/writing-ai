@@ -3,7 +3,7 @@ import uuid
 from bs4 import BeautifulSoup
 import anthropic
 import xml.etree.ElementTree as ET
-from parameters import EXAMPLES, TASK_DESCRIPTION, TONE_CONTEXT, OUTPUT_FORMATTING
+from parameters import PROMPT_LR_GR, PROMPT_FLOW, PROMPT_SUGGESTION
 
 app = Flask(__name__)
 
@@ -33,64 +33,105 @@ def generate_deterministic_uuid(number):
 
 @app.route('/process', methods=['POST'])
 def process_request():
-    data = request.json
-    input_text = data.get('input', '')
-    result_url = data.get('result_url', '')  # URL to send results to
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"message": "Invalid input: No JSON data provided"}), 400
+        
+        input_text = data.get('input', '')
+        type_task = data.get('type', '')
+        result_url = data.get('result_url', '')  # URL to send results to
 
-    TASK_CONTEXT = f""" Below is a IELTS essay:
-    <input>
-    {input_text}
-    </input>"""
+        if not input_text:
+            return jsonify({"message": "Invalid input: 'input' field is required"}), 400
+        if not type_task:
+            return jsonify({"message": "Invalid input: 'type' field is required"}), 400
 
-    # Combine elements to create the prompt
-    prompt = f"""{TASK_CONTEXT}\n\n{TONE_CONTEXT}\n\n{TASK_DESCRIPTION}\n\n{OUTPUT_FORMATTING}\n{EXAMPLES}"""
-    
-    # Get completion from the model
-    output = get_completion(prompt)
+        TASK_CONTEXT = f""" Below is a IELTS essay:
+        <input>
+        {input_text}
+        </input>"""
 
-    output = '<root>' + output + '</root>'
-    root = ET.fromstring(output)
+        # Combine elements to create the prompt
+        prompt = f"""{PROMPT_LR_GR}\n\n{TASK_CONTEXT}"""
 
-    # Lấy phần repair
-    soup = BeautifulSoup(output, 'html.parser')
+        if type_task == 'LR_GR':
+            try:
+                # Get completion from the model
+                output = get_completion(prompt)
+            except Exception as e:
+                return jsonify({"message": "Error in model completion", "error": str(e)}), 500
 
-    # Find all elements with an id attribute
-    for element in soup.find_all(attrs={"id": True}):
-        # Extract the numerical id value
-        number = int(element['id'])
-        # Replace the id with a deterministic UUID
-        element['id'] = str(generate_deterministic_uuid(number))
-    soup_string = str(soup)
-    root_repair = ET.fromstring(soup_string)
+            try:
+                output = '<root>' + output + '</root>'
+                root = ET.fromstring(output)
 
-    # Lấy phần tử repair
-    repair_text = root_repair.find('repair')
+                soup = BeautifulSoup(output, 'html.parser')
 
-    # Lấy phần comments
-    comments = []
-    for explanation in root.findall('.//explanation'):
-        comment_id = explanation.attrib['id']
-        comment_text = explanation.text.strip()
-        comments.append({
-            "id": str(generate_deterministic_uuid(comment_id)),
-            "comment": comment_text
-        })
+                # Find all elements with an id attribute
+                for element in soup.find_all(attrs={"id": True}):
+                    # Extract the numerical id value
+                    number = int(element['id'])
+                    # Replace the id with a deterministic UUID
+                    element['id'] = str(generate_deterministic_uuid(number))
+                soup_string = str(soup)
+                root_repair = ET.fromstring(soup_string)
+                repair_text = root_repair.find('repair')
 
-    # Tạo cấu trúc JSON
-    result = {
-        "data": str(repair_text),
-        "comments": str(comments)
-    }
-    # # Send results to another API endpoint
-    # if result_url:
-    #     try:
-    #         response = requests.post(result_url, json=result)
-    #         response.raise_for_status()  # Raise an exception for HTTP errors
-    #         return jsonify({"message": "Results sent successfully", "status_code": response.status_code})
-    #     except requests.RequestException as e:
-    #         return jsonify({"message": "Failed to send results", "error": str(e)}), 500
+                # Select comments
+                comments = []
+                for explanation in root.findall('.//explanation'):
+                    comment_id = explanation.attrib['id']
+                    comment_text = explanation.text.strip()
+                    comments.append({
+                        "id": str(generate_deterministic_uuid(comment_id)),
+                        "comment": comment_text
+                    })
+            except Exception as e:
+                return jsonify({"message": "Error in processing output", "error": str(e)}), 500
 
-    return jsonify(result)
+            result = {
+                "data": str(repair_text),
+                "comments": str(comments)
+            }
+            # # Send results to another API endpoint
+            # if result_url:
+            #     try:
+            #         response = requests.post(result_url, json=result)
+            #         response.raise_for_status()  # Raise an exception for HTTP errors
+            #         return jsonify({"message": "Results sent successfully", "status_code": response.status_code})
+            #     except requests.RequestException as e:
+            #         return jsonify({"message": "Failed to send results", "error": str(e)}), 500
+
+            return jsonify(result)
+        
+        elif type_task == "FLOW" or type_task == "SUGGESTION":
+            try:
+                # Get completion from the model
+                output = get_completion(prompt)
+            except Exception as e:
+                return jsonify({"message": "Error in model completion", "error": str(e)}), 500
+
+            result = {
+                "data": str(output)
+            }
+            # # Send results to another API endpoint
+            # if result_url:
+            #     try:
+            #         response = requests.post(result_url, json=result)
+            #         response.raise_for_status()  # Raise an exception for HTTP errors
+            #         return jsonify({"message": "Results sent successfully", "status_code": response.status_code})
+            #     except requests.RequestException as e:
+            #         return jsonify({"message": "Failed to send results", "error": str(e)}), 500
+
+            return jsonify(result)
+        else:
+            return jsonify({"message": "Invalid input: 'type' field must be 'LR_GR', 'FLOW', or 'SUGGESTION'"}), 400
+
+    except Exception as e:
+        return jsonify({"message": "An error occurred while processing the request", "error": str(e)}), 500
+
+
 
 @app.route('/receive', methods=['POST'])
 def receive_result():
